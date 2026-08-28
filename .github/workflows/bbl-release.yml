@@ -1,0 +1,129 @@
+name: BBL release build
+
+# Produces a Bambu-enabled OrcaSlicer installer by applying danielwoz's BBL
+# patch series (PR OrcaSlicer/OrcaSlicer#14107) onto an OFFICIAL OrcaSlicer
+# release tag, then letting the fork's inherited build_all.yml compile it.
+#
+# Primary trigger is manual ("Run workflow"). A daily schedule is included as
+# best-effort; GitHub disables scheduled runs on forks until you enable them,
+# so do not rely on it. Since official releases are infrequent, clicking
+# "Run workflow" whenever a new OrcaSlicer release drops is the intended flow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream release tag to build (blank = latest OFFICIAL release, e.g. v2.4.2)'
+        required: false
+        type: string
+      force:
+        description: 'Rebuild even if the release/bbl-<tag> branch already exists'
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 8 * * *'   # best-effort; may be disabled by GitHub on forks
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bbl-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this fork (holds patches/ + this workflow)
+        uses: actions/checkout@v4
+
+      - name: Resolve target upstream release tag
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IN='${{ github.event.inputs.tag }}'
+          if [ -n "$IN" ]; then
+            TAG="$IN"
+          else
+            # /releases/latest returns the newest NON-prerelease, NON-draft
+            # release, i.e. exactly "official releases only".
+            TAG=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest \
+              | jq -r '.tag_name')
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not resolve an upstream release tag."; exit 1
+          fi
+          echo "tag=$TAG"                >> "$GITHUB_OUTPUT"
+          echo "branch=release/bbl-$TAG" >> "$GITHUB_OUTPUT"
+          echo "Target upstream tag: $TAG  ->  branch release/bbl-$TAG"
+
+      - name: Skip if already built (unless force)
+        id: gate
+        env:
+          BR: ${{ steps.pick.outputs.branch }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ "$FORCE" = "true" ]; then
+            echo "already=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/$BR" >/dev/null 2>&1; then
+            echo "already=true"  >> "$GITHUB_OUTPUT"
+            echo "Branch $BR already exists. Set force=true to rebuild."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply BBL patch series onto the release tag
+        if: steps.gate.outputs.already == 'false'
+        env:
+          TAG:    ${{ steps.pick.outputs.tag }}
+          BRANCH: ${{ steps.pick.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global user.name  "bbl-bot"
+          git config --global user.email "bbl-bot@users.noreply.github.com"
+
+          # Fresh clone of THIS fork so we can push a branch back to it.
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" work
+          cd work
+          git remote add upstream https://github.com/OrcaSlicer/OrcaSlicer.git
+          git fetch --tags --depth=1 upstream "refs/tags/${TAG}:refs/tags/${TAG}"
+
+          # Start the release branch at the exact upstream release commit.
+          git checkout -B "$BRANCH" "refs/tags/${TAG}"
+
+          # Apply danielwoz's 10-commit BBL series. 3-way tolerates minor drift.
+          if ! git am --3way "${GITHUB_WORKSPACE}/patches/bbl-14107.patch"; then
+            echo "::error title=Patch conflict::git am failed to apply the BBL series onto ${TAG}."
+            echo "Resolve locally with scripts/rebase-local.sh, refresh patches/bbl-14107.patch, and re-run."
+            git am --show-current-patch=diff || true
+            git am --abort || true
+            exit 1
+          fi
+
+          # Vendor MinHook so the inherited build never depends on submodule
+          # init (the patch adds deps/minhook as a submodule; we flatten it to
+          # tracked files so build_all.yml compiles it as-is).
+          if git config -f .gitmodules --get submodule.deps/minhook.url >/dev/null 2>&1; then
+            git submodule update --init deps/minhook
+            git rm --cached deps/minhook >/dev/null
+            git config -f .gitmodules --remove-section submodule.deps/minhook || true
+            if [ ! -s .gitmodules ] || ! grep -q '\[submodule' .gitmodules; then
+              git rm -f .gitmodules >/dev/null 2>&1 || rm -f .gitmodules
+            fi
+            rm -rf deps/minhook/.git
+            git add -A deps/minhook .gitmodules 2>/dev/null || git add -A deps/minhook
+            git commit -m "CI: vendor MinHook sources (no submodule init needed)"
+          fi
+
+          # Push the branch. Because it carries upstream's build_all.yml and its
+          # 'release/*' push trigger, the fork's inherited CI builds the Windows
+          # installer automatically.
+          git push -f origin "$BRANCH"
+          echo "::notice::Pushed ${BRANCH}. Watch the 'Build all' workflow run for the installer artifact."
