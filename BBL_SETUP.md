@@ -1,100 +1,73 @@
 # OrcaSlicer + Bambu (BBL) — self-serve build setup
 
-This gives you a **GitHub fork of OrcaSlicer** that, on demand, applies
-danielwoz's BBL host-mode patch series (PR
-[OrcaSlicer#14107](https://github.com/OrcaSlicer/OrcaSlicer/pull/14107)) onto an
-**official OrcaSlicer release** and builds a Windows installer using
-OrcaSlicer's own tested CI. The result behaves like the working
-`v2.4.0-beta-bbl3` build (genuine stock Bambu plugin, cloud print + camera),
-but tracks whatever official release you point it at.
+This fork rebuilds a **Bambu-enabled OrcaSlicer** by replaying danielwoz's
+`my_orca` BBL commit stack (the code behind his working `v2.4.0-beta-bbl3`
+release) onto an **official OrcaSlicer release**, then letting the fork's own
+inherited CI (`build_all.yml`) compile the Windows installer.
 
-You only follow **official releases** (currently `v2.4.2`), never nightlies:
-the workflow reads `releases/latest`, which is the newest non-prerelease.
+It follows **official releases only** (the workflow reads `releases/latest`,
+which is the newest non-prerelease), never nightlies.
 
-## What's in this folder
+## Why the source is danielwoz's `my_orca`, not his PR #14107
+
+danielwoz's PR #14107 is a newer re-spin that depends on OrcaSlicer's
+`PrintParams_0203` (added upstream on Jul 26 2026). Releases older than that
+(e.g. v2.4.2, tagged Jul 6) don't have it, so the PR can't target them. His
+`my_orca` stack behind `v2.4.0-beta-bbl3` instead uses the long-standing
+`PrintParams_Legacy` (present in v2.4.x), so it rebases cleanly onto same-era
+official releases. That stack is the source this automation replays.
+
+## What's in this fork
 
 ```
-patches/bbl-14107.patch          danielwoz's 10-commit BBL series (downloaded from PR #14107)
-.github/workflows/bbl-release.yml the orchestrator (detect release -> patch -> push -> build)
-scripts/rebase-local.sh          local conflict-resolution + patch refresh helper
+.github/workflows/bbl-release.yml   orchestrator: pick release -> replay stack -> push -> CI builds
+scripts/bbl-rebase.sh               local cherry-pick + conflict-resolution helper
 ```
 
-## One-time setup
+## One-time setup (already done for this fork)
 
-1. **Fork OrcaSlicer.** On GitHub, fork
-   `https://github.com/OrcaSlicer/OrcaSlicer` to your account. Keep the default
-   name `OrcaSlicer`.
+- Actions enabled; Workflow permissions = Read and write.
+- Keep **Bambu Studio installed** (not running) on the machine you run the
+  installer on: the launcher stages a genuine `bambu-studio.exe` from it.
 
-2. **Add these files to your fork's default branch.** From a clone of your fork:
-   ```bash
-   git clone https://github.com/<you>/OrcaSlicer.git
-   cd OrcaSlicer
-   # copy patches/ , .github/workflows/bbl-release.yml , scripts/ from this folder in
-   cp -r /path/to/orca-bbl/patches .
-   mkdir -p .github/workflows && cp /path/to/orca-bbl/.github/workflows/bbl-release.yml .github/workflows/
-   mkdir -p scripts && cp /path/to/orca-bbl/scripts/rebase-local.sh scripts/
-   git add patches .github/workflows/bbl-release.yml scripts/rebase-local.sh
-   git commit -m "Add BBL release-build automation"
-   git push origin main
-   ```
-   These paths don't match upstream's build triggers, so pushing them to `main`
-   won't kick off a build.
+## Building a release
 
-3. **Enable Actions on the fork.** GitHub Actions is off by default on forks.
-   Repo -> **Actions** tab -> "I understand my workflows, go ahead and enable
-   them." Then Settings -> Actions -> General -> Workflow permissions -> set
-   **Read and write permissions** (the orchestrator pushes a branch).
+1. Actions -> **BBL release build** -> **Run workflow**.
+   - `tag`: blank = latest official release, or type one (e.g. `v2.4.2`).
+   - `dwoz_ref`: danielwoz source to take BBL commits from. Default
+     `v2.4.0-beta-bbl3` (known-good). Bump it only when he cuts a newer stack
+     you've confirmed is compatible with your target release's era.
+   - `force`: rebuild even if `release/bbl-<tag>` already exists.
+2. It computes danielwoz's authored commits (`merge-base..dwoz_ref`), cherry-
+   picks them onto the release tag, and pushes `release/bbl-<tag>`. That push
+   triggers the inherited **Build all**.
+3. When Build all is green, download the `OrcaSlicer_Windows_<ver>_x64`
+   installer artifact from its run and install it.
 
-## Building a release (the "I run something" step)
+## When it stops on a conflict
 
-1. Fork -> **Actions** -> **BBL release build** -> **Run workflow**.
-   - Leave `tag` blank to build the latest official release, or type one
-     (e.g. `v2.4.2`).
-   - `force` = true rebuilds even if that release was built before.
-2. The orchestrator creates `release/bbl-<tag>`, applies the patch, vendors
-   MinHook, and pushes. That push triggers the inherited **Build all** workflow.
-3. When **Build all** finishes, open its run and download the artifact
-   `OrcaSlicer_Windows_<ver>_x64` (installer) or `..._portable`.
-4. Install it. On first launch it stages a genuine `bambu-studio.exe` from your
-   installed Bambu Studio (keep Bambu Studio installed, per the working build).
+danielwoz's stack is a ~24-commit fork, so some releases won't apply cleanly.
+The workflow then fails at "Replay danielwoz's BBL stack" and asks you to
+resolve locally:
 
-That's the whole loop. When a new official OrcaSlicer release lands, click
-**Run workflow** again.
-
-## First-run expectations and gotchas
-
-- **First build is slow (~1.5–2 h).** OrcaSlicer's deps have no cache on a fresh
-  fork; the first run builds and caches them. Later runs are ~30–45 min.
-- **Patch may not apply cleanly onto 2.4.2.** danielwoz authored the series on a
-  ~2.4.0-beta base. If the orchestrator fails at "Apply BBL patch series", the
-  patch needs a manual rebase:
-  ```bash
-  # in a clone of your fork:
-  scripts/rebase-local.sh v2.4.2
-  # resolve conflicts as it instructs, then it refreshes patches/bbl-14107.patch
-  git add patches/bbl-14107.patch && git commit -m "Rebase BBL series onto v2.4.2" && git push
-  # re-run the workflow
-  ```
-  Conflicts almost always sit in `src/OrcaSlicer_app_msvc.cpp`,
-  `src/slic3r/GUI/GUI_App.cpp`, and the CMakeLists files.
-- **Plugin ABI pin.** danielwoz's build targets the stock Bambu plugin
-  `02.07.01.51`. If a future OrcaSlicer base expects a newer plugin ABI, the
-  launcher shim in commit 1 of the series may need updating even after a clean
-  rebase (symptom: signs in but won't connect to the printer). This is the one
-  part automation can't fully absorb.
-- **Runner label.** Upstream's build prefers a self-hosted `orca-win-server`
-  runner and falls back to `windows-latest` off-org. On your fork it should use
-  `windows-latest`. If a Windows job sits "Queued" forever, that fallback isn't
-  triggering — ping me and we'll add a one-line override.
-- **Schedule trigger.** The daily `schedule:` in the orchestrator is best-effort;
-  GitHub disables scheduled workflows on forks until re-enabled and after repo
-  inactivity. Treat **Run workflow** as the real trigger.
-
-## Updating danielwoz's patches themselves
-
-If danielwoz pushes new BBL fixes to PR #14107, refresh the series:
 ```bash
-curl -fsSL https://github.com/OrcaSlicer/OrcaSlicer/pull/14107.patch \
-  -o patches/bbl-14107.patch
-git add patches/bbl-14107.patch && git commit -m "Refresh BBL series from PR #14107" && git push
+git clone https://github.com/<you>/OrcaSlicer.git && cd OrcaSlicer
+scripts/bbl-rebase.sh v2.4.2            # (or your target tag)
+# resolve conflicts as it instructs (git add -A; git cherry-pick --continue),
+# then it pushes release/bbl-v2.4.2 and CI builds it.
 ```
+
+Conflicts almost always sit in `GUI_App.cpp` (plugin-load gate),
+`OrcaSlicer_app_msvc.cpp` (launcher), `src/CMakeLists.txt`, and
+`DeviceManager.cpp`.
+
+## Gotchas
+
+- **First build is ~1.5-2 h** (cold deps cache on a fresh fork); later ~30-45 min.
+- **Plugin ABI pin.** The stack pins the stock Bambu plugin to `02.07.01.51`.
+  If a future release's plugin ABI diverges, the build may compile but fail to
+  connect to the printer; that's the one thing a clean rebase can't guarantee.
+- **Runner.** Upstream prefers a self-hosted Windows runner and falls back to
+  `windows-latest` off-org; on your fork it should use `windows-latest`.
+- **Schedule** in the orchestrator is best-effort; use Run workflow as the real
+  trigger.
