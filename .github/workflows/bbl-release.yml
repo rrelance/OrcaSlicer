@@ -116,5 +116,34 @@ jobs:
             exit 1
           fi
 
+          # Trim CI to Windows x64 only (this fork's target); reuse OrcaSlicer's
+          # own build_check_cache.yml -> build_orca.yml, dropping the macOS/Linux/
+          # Flatpak/Win-arm64/unit-test jobs the upstream build_all.yml would run.
+          cat > .github/workflows/build_all.yml <<'YAML'
+          name: Build all
+          on:
+            push:
+              branches:
+                - 'release/bbl-*'
+            workflow_dispatch:
+          concurrency:
+            group: bbl-build
+            cancel-in-progress: false
+          jobs:
+            build_windows:
+              name: Build Windows x64
+              uses: ./.github/workflows/build_check_cache.yml
+              with:
+                os: windows-latest
+                arch: x64
+                build-deps-only: false
+                force-build: false
+              secrets: inherit
+          YAML
+          # strip the 10-space indentation the heredoc carried for readability
+          sed -i 's/^          //' .github/workflows/build_all.yml
+          git add .github/workflows/build_all.yml
+          git commit -q -m "CI: build Windows x64 only"
+
           git push -f origin "$BRANCH"
-          echo "::notice::Pushed ${BRANCH} (${#COMMITS[@]} commits). The inherited 'Build all' will build the installer."
+          echo "::notice::Pushed ${BRANCH} (${#COMMITS[@]} commits, Windows x64 only). The 'Build all' run will build the installer."
