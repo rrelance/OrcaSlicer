@@ -415,6 +415,7 @@ jobs:
         shell: pwsh
 
       - name: Build system preset cache (Windows)
+        continue-on-error: true  # preset cache is a first-launch optimization; don't fail the build
         if: runner.os == 'Windows'
         shell: cmd
         # Shipped into both the already-installed tree (portable zip, MSIX) and
