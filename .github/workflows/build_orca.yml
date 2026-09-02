@@ -423,12 +423,14 @@ jobs:
         run: scripts\build_preset_cache.bat --prune-source "%BUILD_DIR%" "resources\profiles" "%BUILD_DIR%\OrcaSlicer\resources\profiles"
 
       - name: Pack unit tests Win
+        continue-on-error: true
         if: runner.os == 'Windows'
         working-directory: ${{ github.workspace }}
         shell: pwsh
         run: tar -cvf build_tests.tar ${{ env.BUILD_DIR }}/tests
 
       - name: Upload Test Artifact Win
+        continue-on-error: true
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
