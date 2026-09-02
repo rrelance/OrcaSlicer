@@ -165,6 +165,7 @@ if (WIN32)
     # PluginVerifyRedirect; only the filename has to match.
     set_target_properties(OrcaSlicer PROPERTIES OUTPUT_NAME "BambuStudio")
 endif ()
+if (NOT WIN32 AND NOT APPLE)
     # Binary name on unix like systems (Linux, Unix)
     set_target_properties(OrcaSlicer PROPERTIES OUTPUT_NAME "orca-slicer")
     set(SLIC3R_APP_CMD "orca-slicer")
